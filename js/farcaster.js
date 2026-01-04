@@ -1,25 +1,33 @@
 import { $ } from "./ui.js";
 
 export async function initFarcaster() {
-  // Load SDK from ESM (stays module-safe even when split into files)
   const { sdk } = await import("https://esm.sh/@farcaster/miniapp-sdk");
 
-  // Hide env banner in Mini App, show only in normal browser
-  try {
-    const inMini = await sdk.isInMiniApp();
-    if (inMini) {
-      $("env").style.display = "none";
-    } else {
-      $("env").style.display = "block";
-      $("env").textContent = "Running in normal browser 🌐";
-    }
+  // Expose early so other modules can use it
+  window.__FC_SDK__ = sdk;
 
-    // Read profile
-    if (inMini) {
+  let inMini = false;
+  try {
+    inMini = await sdk.isInMiniApp();
+  } catch {}
+
+  // Hide env banner inside mini app
+  if (inMini) {
+    $("env").style.display = "none";
+  } else {
+    $("env").style.display = "block";
+    $("env").textContent = "Running in normal browser 🌐";
+  }
+
+  // Try load profile (best effort; never block ready())
+  if (inMini) {
+    try {
       let ctx = null;
+
       try {
         if (typeof sdk.getContext === "function") ctx = await sdk.getContext();
       } catch {}
+
       if (!ctx) {
         try { ctx = sdk.context; } catch {}
       }
@@ -31,14 +39,11 @@ export async function initFarcaster() {
         $("fcFid").textContent = "FID: " + (user.fid ?? "-");
         if (user.pfpUrl) $("pfp").src = user.pfpUrl;
       }
-
-      // dismiss splash
-      try { await sdk.actions.ready(); } catch {}
+    } catch {
+      // ignore profile errors
     }
-  } catch {
-    $("env").style.display = "none";
-  }
 
-  // Expose sdk globally for wallet module (simple & reliable for static)
-  window.__FC_SDK__ = sdk;
+    // ✅ ALWAYS call ready() when in mini app (even if profile failed)
+    try { await sdk.actions.ready(); } catch {}
+  }
 }
