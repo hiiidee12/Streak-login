@@ -29,19 +29,19 @@
 
 <body>
   <div class="container">
-
     <div class="card">
-      <!-- hidden automatically in Mini App -->
       <div class="muted" id="env">Loading...</div>
 
       <div class="profile">
-        <img id="pfp" class="pfp" src="https://streak-login.vercel.app/assets/check.jpg" alt="pfp" />
+        <img id="pfp" class="pfp" src="/assets/check.jpg" alt="Profile photo"
+             referrerpolicy="no-referrer"
+             onerror="this.src='/assets/check.jpg'" />
         <div>
           <div class="profileTop">
-            <b id="fcName">-</b>
+            <b id="fcName">Guest</b>
             <span class="badge" id="fcFid">FID: -</span>
           </div>
-          <div class="muted" id="fcUser">@-</div>
+          <div class="muted" id="fcUser">Not signed in</div>
         </div>
       </div>
 
@@ -64,14 +64,18 @@
         <div id="net" class="badge">-</div>
       </div>
 
-      <div class="row">
+      <div class="row" style="margin-top:12px;">
         <button id="connectBtn">Connect Wallet</button>
         <button id="checkinBtn" disabled>Daily Check-in (Tx)</button>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
         <button id="authBtn">Get QuickAuth Token</button>
       </div>
 
       <div class="mini">Status: <span id="status" class="badge">Idle</span></div>
-<div class="mini">Debug: <span id="debug" class="badge">-</span></div>
+      <div class="mini">Debug: <span id="debug" class="badge">-</span></div>
+    </div>
 
     <div class="card">
       <div class="muted"><b>Notes</b></div>
@@ -80,40 +84,257 @@
         <li>We confirm it via Base RPC to avoid unsupported wallet methods.</li>
       </ul>
     </div>
-
   </div>
 
   <!-- Toast -->
-<div id="toast" class="toast" aria-live="polite" aria-atomic="true">
-  <div class="toast-title"></div>
-  <div class="toast-msg"></div>
-</div>
-
-  <!-- Modal -->
-  <div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
-    <div class="modal">
-      <div class="modal-header">
-        <div>
-          <div class="modal-title" id="modalTitle">Success</div>
-          <div class="modal-sub" id="modalSub">Transaction sent</div>
-        </div>
-        <button class="modal-close" id="modalClose" aria-label="Close">✕</button>
-      </div>
-
-      <div class="modal-body">
-        <div class="muted" style="margin-bottom:8px;">Tx Hash</div>
-        <div class="txbox">
-          <code id="modalTxHash" class="txhash"></code>
-        </div>
-
-        <div class="row" style="margin-top:12px;">
-          <button id="copyTxBtn">Copy Hash</button>
-          <button id="openExplorerBtn">Open Explorer</button>
-        </div>
-      </div>
-    </div>
+  <div id="toast" class="toast" aria-live="polite" aria-atomic="true">
+    <div class="toast-title"></div>
+    <div class="toast-msg"></div>
   </div>
 
-  <script type="module" src="/js/app.js"></script>
+  <script>
+    // ---------- UI helpers ----------
+    const $ = (id) => document.getElementById(id);
+
+    function setDebug(msg) {
+      const el = $("debug");
+      if (el) el.textContent = msg;
+      console.log("[DEBUG]", msg);
+    }
+
+    function setStatus(text, type = "ok") {
+      const el = $("status");
+      if (!el) return;
+      el.textContent = text;
+      el.className = `badge ${type}`;
+    }
+
+    function showToast(title, msg = "") {
+      const el = $("toast");
+      if (!el) return alert(title + (msg ? `\n${msg}` : ""));
+      el.querySelector(".toast-title").textContent = title;
+      el.querySelector(".toast-msg").textContent = msg;
+      el.classList.add("show");
+      setTimeout(() => el.classList.remove("show"), 2600);
+    }
+
+    function shortAddr(a) {
+      return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "-";
+    }
+
+    // ---------- wallet ----------
+    const CONFIG = { BASE_CHAIN_ID_DEC: 8453 };
+    let ethProvider = null;
+    let address = null;
+
+    async function getWalletProvider() {
+      return window.ethereum || null;
+    }
+
+    async function updateNetwork() {
+      try {
+        const chainHex = await ethProvider.request({ method: "eth_chainId" });
+        const chainDec = parseInt(chainHex, 16);
+        $("net").textContent =
+          `chainId ${chainDec}` + (chainDec === CONFIG.BASE_CHAIN_ID_DEC ? " (Base ✅)" : "");
+        if (chainDec === CONFIG.BASE_CHAIN_ID_DEC) setStatus("Connected ✅", "ok");
+        else setStatus("Connected (not Base) ⚠️", "warn");
+      } catch {
+        $("net").textContent = "-";
+      }
+    }
+
+    async function connectWallet() {
+      try {
+        ethProvider = await getWalletProvider();
+        if (!ethProvider?.request) {
+          showToast("Wallet not found");
+          return;
+        }
+        const accounts = await ethProvider.request({ method: "eth_requestAccounts" });
+        address = accounts?.[0];
+        if (!address) return;
+
+        $("addr").textContent = shortAddr(address);
+        await updateNetwork();
+
+        $("connectBtn").textContent = "Connected ✅";
+        $("connectBtn").disabled = true;
+
+        $("checkinBtn").disabled = false;
+
+        setDebug("Wallet connected");
+      } catch (e) {
+        showToast("Connect failed", e?.message || String(e));
+      }
+    }
+
+    async function autoConnectWallet() {
+      try {
+        ethProvider = await getWalletProvider();
+        if (!ethProvider?.request) return;
+
+        const accounts = await ethProvider.request({ method: "eth_accounts" });
+        address = accounts?.[0];
+        if (!address) return;
+
+        $("addr").textContent = shortAddr(address);
+        await updateNetwork();
+
+        $("connectBtn").textContent = "Connected ✅";
+        $("connectBtn").disabled = true;
+
+        $("checkinBtn").disabled = false;
+
+        setDebug("Wallet auto-connected");
+      } catch {}
+    }
+
+    async function dailyCheckin() {
+      if (!ethProvider || !address) {
+        showToast("Wallet not connected");
+        return;
+      }
+
+      // lock per-day (demo)
+      const key = "checkedInDay";
+      const today = new Date().toDateString();
+      if (localStorage.getItem(key) === today) {
+        $("checkinBtn").textContent = "Already checked in today ✅";
+        $("checkinBtn").disabled = true;
+        showToast("Already checked in", "Come back tomorrow");
+        return;
+      }
+
+      try {
+        setDebug("Sending tx...");
+        const txHash = await ethProvider.request({
+          method: "eth_sendTransaction",
+          params: [{ from: address, to: address, value: "0x0" }],
+        });
+
+        localStorage.setItem(key, today);
+
+        $("checkinBtn").textContent = "Already checked in today ✅";
+        $("checkinBtn").disabled = true;
+
+        showToast("Check-in successful ✅", `Tx: ${String(txHash).slice(0, 10)}…`);
+        setDebug("Tx sent ✅");
+      } catch (e) {
+        showToast("Check-in failed", e?.message || String(e));
+        setDebug("Tx failed");
+      }
+    }
+
+    // ---------- Farcaster SDK readiness ----------
+    async function ensureSDKReady() {
+      const sdk = window.__FC_SDK__;
+      if (!sdk?.actions?.ready) {
+        setDebug("SDK missing");
+        return false;
+      }
+      for (let i = 0; i < 8; i++) {
+        try {
+          await sdk.actions.ready();
+          setDebug("SDK ready ✅");
+          return true;
+        } catch {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+      setDebug("ready() failed");
+      return false;
+    }
+
+    // ---------- QuickAuth (stable) ----------
+    async function getQuickAuthToken() {
+      const sdk = window.__FC_SDK__;
+      try {
+        setDebug("QuickAuth start");
+        if (!sdk?.quickAuth?.getToken) {
+          showToast("QuickAuth unavailable", "Open inside Farcaster Mini App");
+          setDebug("QuickAuth API missing");
+          return;
+        }
+
+        // IMPORTANT: some SDKs return { token }, some return string. Support both.
+        const t = await sdk.quickAuth.getToken();
+        const token = typeof t === "string" ? t : t?.token;
+
+        if (!token) {
+          showToast("QuickAuth failed", "No token returned");
+          setDebug("No token");
+          return;
+        }
+
+        setDebug("Token acquired");
+
+        const r = await fetch("/api/me", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        const data = await r.json().catch(() => ({}));
+
+        if (!r.ok) {
+          console.log("verify failed:", data);
+          showToast("Sign-in failed", data?.error || `HTTP ${r.status}`);
+          setDebug(`API failed (${r.status})`);
+          return;
+        }
+
+        const name = data.displayName || data.username || "Farcaster User";
+        const username = data.username ? `@${data.username}` : "@unknown";
+        const fid = data.fid ?? "-";
+
+        $("fcName").textContent = name;
+        $("fcUser").textContent = username;
+        $("fcFid").textContent = `FID: ${fid}`;
+        if (data.pfpUrl) $("pfp").src = data.pfpUrl;
+
+        showToast("Signed in ✅", "Profile loaded");
+        setDebug("Profile loaded ✅");
+      } catch (e) {
+        console.log(e);
+        showToast("QuickAuth failed", e?.message || String(e));
+        setDebug("QuickAuth exception");
+      }
+    }
+
+    // ---------- boot ----------
+    (async function boot() {
+      setDebug("boot()");
+      $("env").textContent = "Loading...";
+
+      // Detect miniapp environment (best-effort)
+      try {
+        const inMiniApp =
+          !!window.__FC_SDK__ ||
+          /warpcast|farcaster/i.test(navigator.userAgent || "");
+        $("env").textContent = inMiniApp ? "Running inside Mini App ✅" : "Running in browser 🌐";
+      } catch {
+        $("env").textContent = "Running...";
+      }
+
+      // Wire buttons
+      $("connectBtn").addEventListener("click", connectWallet);
+      $("checkinBtn").addEventListener("click", dailyCheckin);
+      $("authBtn").addEventListener("click", getQuickAuthToken);
+
+      // Auto connect wallet
+      await autoConnectWallet();
+
+      // Disable checkin if already done today
+      const today = new Date().toDateString();
+      if (localStorage.getItem("checkedInDay") === today) {
+        $("checkinBtn").textContent = "Already checked in today ✅";
+        $("checkinBtn").disabled = true;
+      }
+
+      // Ensure Farcaster ready (prevents “Ready not called”)
+      await ensureSDKReady();
+
+      setDebug("boot done ✅");
+    })();
+  </script>
 </body>
 </html>
