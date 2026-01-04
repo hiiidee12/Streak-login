@@ -1,3 +1,4 @@
+// js/wallet.js
 import { CONFIG } from "./config.js";
 import { $, setStatus, showToast, openModal } from "./ui.js";
 
@@ -15,11 +16,14 @@ function shortAddr(a) {
 }
 function updateButtons() {
   const checked = hasCheckedInToday();
-  $("checkinBtn").disabled = !address || checked;
-  $("checkinBtn").textContent = checked ? "Already checked in today ✅" : "Daily Check-in (Tx)";
+  const btn = $("checkinBtn");
+  if (!btn) return;
+  btn.disabled = !address || checked;
+  btn.textContent = checked ? "Already checked in today ✅" : "Daily Check-in (Tx)";
 }
 function setConnectButtonConnected(isConnected) {
   const btn = $("connectBtn");
+  if (!btn) return;
   if (isConnected) {
     btn.textContent = "Connected ✅";
     btn.disabled = true;
@@ -44,7 +48,7 @@ async function rpc(method, params = []) {
   const res = await fetch(CONFIG.BASE_RPC, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   const json = await res.json();
   if (json.error) throw new Error(json.error.message || "RPC error");
@@ -56,7 +60,7 @@ async function waitForReceipt(txHash, timeoutMs = 120000) {
   while (Date.now() - started < timeoutMs) {
     const receipt = await rpc("eth_getTransactionReceipt", [txHash]);
     if (receipt) return receipt;
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error("Timeout waiting for confirmation.");
 }
@@ -64,6 +68,27 @@ async function waitForReceipt(txHash, timeoutMs = 120000) {
 function utf8ToHex(str) {
   const enc = new TextEncoder().encode(str);
   return "0x" + Array.from(enc).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function setConnectedUI(chainIdDec) {
+  $("addr").textContent = shortAddr(address);
+
+  if (chainIdDec) {
+    $("net").textContent =
+      `chainId ${chainIdDec}` +
+      (chainIdDec === CONFIG.BASE_CHAIN_ID_DEC ? " (Base ✅)" : "");
+  } else {
+    $("net").textContent = "-";
+  }
+
+  if (chainIdDec && chainIdDec !== CONFIG.BASE_CHAIN_ID_DEC) {
+    setStatus("Connected (not Base) ⚠️", "warn");
+  } else {
+    setStatus("Connected ✅", "ok");
+  }
+
+  setConnectButtonConnected(true);
+  updateButtons();
 }
 
 export async function connectWallet() {
@@ -93,32 +118,49 @@ export async function connectWallet() {
     return;
   }
 
-  $("addr").textContent = shortAddr(address);
-
-  // Read chainId (don't force switch)
+  let chainIdDec = 0;
   try {
     const chainIdHex = await ethProvider.request({ method: "eth_chainId", params: [] });
-    const chainIdDec = parseInt(chainIdHex, 16);
-    $("net").textContent = `chainId ${chainIdDec}` + (chainIdDec === CONFIG.BASE_CHAIN_ID_DEC ? " (Base ✅)" : "");
-    if (chainIdDec !== CONFIG.BASE_CHAIN_ID_DEC) {
-      setStatus("Connected (not Base) ⚠️", "warn");
-    } else {
-      setStatus("Connected ✅", "ok");
-    }
+    chainIdDec = parseInt(chainIdHex, 16);
+  } catch {}
+
+  setConnectedUI(chainIdDec);
+
+  try {
+    const sdk = window.__FC_SDK__;
+    if (sdk?.actions?.ready) await sdk.actions.ready();
+  } catch {}
+}
+
+// ✅ Auto reconnect silently (no popup)
+export async function autoConnectWallet() {
+  try {
+    ethProvider = await getWalletProvider();
+    if (!ethProvider?.request) return;
+
+    const accounts = await ethProvider.request({ method: "eth_accounts", params: [] });
+    const a = accounts?.[0];
+    if (!a) return;
+
+    address = a;
+
+    let chainIdDec = 0;
+    try {
+      const chainIdHex = await ethProvider.request({ method: "eth_chainId", params: [] });
+      chainIdDec = parseInt(chainIdHex, 16);
+    } catch {}
+
+    setConnectedUI(chainIdDec);
   } catch {
-    $("net").textContent = "-";
-    setStatus("Connected ✅", "ok");
+    // ignore
   }
-
-  setConnectButtonConnected(true);
-  updateButtons();
-
-  // dismiss splash (if available)
-  try { window.__FC_SDK__?.actions?.ready && await window.__FC_SDK__.actions.ready(); } catch {}
 }
 
 export async function dailyCheckin() {
-  if (!ethProvider?.request || !address) return;
+  if (!ethProvider?.request || !address) {
+    showToast("Not connected", "Connect wallet first");
+    return;
+  }
 
   if (hasCheckedInToday()) {
     setStatus("Already checked in today ✅", "ok");
@@ -147,12 +189,7 @@ export async function dailyCheckin() {
     setStatus("Sending transaction...", "warn");
     txHash = await ethProvider.request({
       method: "eth_sendTransaction",
-      params: [{
-        from: address,
-        to: address,
-        value: "0x0",
-        data
-      }]
+      params: [{ from: address, to: address, value: "0x0", data }],
     });
   } catch (e) {
     setStatus("Transaction rejected/failed ❌", "err");
@@ -160,7 +197,6 @@ export async function dailyCheckin() {
     return;
   }
 
-  // Confirm via Base RPC
   try {
     setStatus("Waiting confirmation...", "warn");
     await waitForReceipt(txHash);
@@ -170,20 +206,22 @@ export async function dailyCheckin() {
 
     setStatus("Daily check-in successful ✅", "ok");
     showToast("Check-in successful ✅", "Confirmed on Base", 1800);
+
     openModal({
       title: "Check-in successful ✅",
       sub: "Confirmed on Base",
       txHash,
-      explorerUrl: CONFIG.EXPLORER_TX(txHash)
+      explorerUrl: CONFIG.EXPLORER_TX(txHash),
     });
   } catch {
     setStatus("Sent, but not confirmed yet ⚠️", "warn");
     showToast("Tx sent ⚠️", "Confirmation pending", 2200);
+
     openModal({
       title: "Tx sent ⚠️",
       sub: "Confirmation pending (check explorer)",
       txHash,
-      explorerUrl: CONFIG.EXPLORER_TX(txHash)
+      explorerUrl: CONFIG.EXPLORER_TX(txHash),
     });
   }
 }
@@ -200,11 +238,9 @@ export async function getQuickAuthToken() {
 }
 
 export function initWalletUI() {
-  // initial state
   setConnectButtonConnected(false);
   updateButtons();
 
-  // wire buttons
   $("connectBtn").onclick = connectWallet;
   $("checkinBtn").onclick = dailyCheckin;
   $("authBtn").onclick = getQuickAuthToken;
