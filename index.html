@@ -18,8 +18,8 @@
   <meta name="twitter:description" content="Daily check-in using a wallet transaction on Base." />
   <meta name="twitter:image" content="https://streak-login.vercel.app/assets/check.jpg" />
 
-  <!-- Farcaster Mini App (IMPORTANT) -->
-  <!-- NOTE: imageUrl should be 3:2 (e.g. 1200x800). Please upload /miniapp-card.png -->
+  <!-- Farcaster Mini App -->
+  <!-- NOTE: imageUrl should ideally be 3:2 (e.g., 1200x800). Upload /miniapp-card.png if you can. -->
   <meta
     name="fc:miniapp"
     content='{"version":"1","imageUrl":"https://streak-login.vercel.app/miniapp-card.png","button":{"title":"Open Daily Check-in","action":{"type":"launch_frame","name":"Daily Check-in","url":"https://streak-login.vercel.app/","splashImageUrl":"https://streak-login.vercel.app/assets/check.jpg","splashBackgroundColor":"#0b0f17"}}}'
@@ -28,7 +28,7 @@
   <style>
     :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
     body { margin:0; background:#0b0f17; color:#e7eefc; }
-    .container { max-width: 480px; margin: 0 auto; padding: 16px; }
+    .container { max-width: 520px; margin: 0 auto; padding: 16px; }
     .card {
       background:#121a2a;
       border:1px solid #22304d;
@@ -41,7 +41,7 @@
     .row { display:flex; gap:10px; margin-top:10px; flex-wrap: wrap; }
     button {
       flex: 1;
-      min-width: 160px;
+      min-width: 170px;
       padding:12px;
       border-radius:14px;
       border:1px solid #2a3a5d;
@@ -63,8 +63,10 @@
     .warn { color:#FFD37C; }
     .err { color:#FF8A8A; }
     .hr { height:1px; background:#22304d; margin:12px 0; }
-    code { font-size:12px; }
     .mini { font-size:12px; opacity:.8; margin-top:8px; }
+    .profile { display:flex; gap:10px; align-items:center; margin-top:10px; }
+    .pfp { width:44px; height:44px; border-radius:999px; border:1px solid #22304d; object-fit:cover; }
+    code { font-size:12px; }
   </style>
 
   <!-- ethers.js (UMD) -->
@@ -73,7 +75,23 @@
 
 <body>
   <div class="container">
+
     <div class="card">
+      <div class="muted" id="env">Loading...</div>
+
+      <div class="profile">
+        <img id="pfp" class="pfp" src="https://streak-login.vercel.app/assets/check.jpg" alt="pfp" />
+        <div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <b id="fcName">-</b>
+            <span class="badge" id="fcFid">FID: -</span>
+          </div>
+          <div class="muted" id="fcUser">@-</div>
+        </div>
+      </div>
+
+      <div class="hr"></div>
+
       <h1>Daily Check-in (Wallet Transaction)</h1>
       <div class="muted">
         This demo performs a <b>0 ETH</b> transaction to your own address as a “check-in”.
@@ -94,12 +112,10 @@
       <div class="row">
         <button id="connectBtn">Connect Wallet</button>
         <button id="checkinBtn" disabled>Daily Check-in (Tx)</button>
-        <button id="addMiniAppBtn" disabled>Add Mini App</button>
+        <button id="authBtn">Get QuickAuth Token</button>
       </div>
 
-      <div class="mini">
-        Status: <span id="status" class="badge">Idle</span>
-      </div>
+      <div class="mini">Status: <span id="status" class="badge">Idle</span></div>
     </div>
 
     <div class="card">
@@ -109,25 +125,17 @@
         <li>Production version should use a smart contract (e.g. <code>checkIn()</code>) or verify the tx on a backend.</li>
       </ul>
     </div>
+
   </div>
 
   <script type="module">
     import { sdk } from "https://esm.sh/@farcaster/miniapp-sdk";
-
     const ethers = window.ethers;
 
-    // ===== Config: Base Mainnet =====
-    const TARGET_CHAIN = {
-      chainIdHex: "0x2105", // 8453
-      chainName: "Base Mainnet",
-      nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-      rpcUrls: ["https://mainnet.base.org"],
-      blockExplorerUrls: ["https://basescan.org"]
-    };
-
+    const BASE_CHAIN_HEX = "0x2105"; // 8453
     const LS_KEY = "daily_checkin_last_date";
 
-    let provider, signer, userAddress;
+    let provider, signer, address;
 
     const $ = (id) => document.getElementById(id);
 
@@ -136,13 +144,12 @@
       $("status").className = "badge " + cls;
     }
 
-    function todayKey() {
-      // YYYY-MM-DD (UTC)
+    function todayKeyUTC() {
       return new Date().toISOString().slice(0, 10);
     }
 
     function hasCheckedInToday() {
-      return localStorage.getItem(LS_KEY) === todayKey();
+      return localStorage.getItem(LS_KEY) === todayKeyUTC();
     }
 
     function shortAddr(a) {
@@ -151,68 +158,108 @@
 
     function updateButtons() {
       const checked = hasCheckedInToday();
-      $("checkinBtn").disabled = !userAddress || checked;
+      $("checkinBtn").disabled = !address || checked;
       $("checkinBtn").textContent = checked ? "Already checked in today ✅" : "Daily Check-in (Tx)";
-      $("addMiniAppBtn").disabled = false; // enable once JS loaded (manifest still required)
     }
 
-    async function ensureChain() {
-      if (!window.ethereum) return;
-
+    async function safeGetContext() {
+      // Prefer sdk.getContext() if available; fallback to sdk.context
       try {
-        await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: TARGET_CHAIN.chainIdHex }]
-        });
-      } catch (err) {
-        // If chain is not added
-        if (err && err.code === 4902) {
-          await window.ethereum.request({
-            method: "wallet_addEthereumChain",
-            params: [TARGET_CHAIN]
-          });
-        } else {
-          // user rejected or other errors -> allow continuing on current network
-          console.warn("Chain switch skipped:", err);
+        if (typeof sdk.getContext === "function") return await sdk.getContext();
+      } catch {}
+      try {
+        return sdk.context;
+      } catch {}
+      return null;
+    }
+
+    async function loadFarcasterProfile() {
+      try {
+        const inMini = await sdk.isInMiniApp();
+        $("env").textContent = inMini ? "Running inside Mini App ✅" : "Running in normal browser 🌐";
+
+        if (inMini) {
+          const ctx = await safeGetContext();
+          const user = ctx?.user;
+
+          if (user) {
+            $("fcName").textContent = user.displayName || user.username || "Farcaster User";
+            $("fcUser").textContent = "@" + (user.username || "unknown");
+            $("fcFid").textContent = "FID: " + (user.fid ?? "-");
+            if (user.pfpUrl) $("pfp").src = user.pfpUrl;
+          }
+
+          // Hide splash once UI is ready
+          try { await sdk.actions.ready(); } catch {}
         }
+      } catch (e) {
+        $("env").textContent = "Mini App SDK not available";
       }
+    }
+
+    async function getWalletProvider() {
+      // Best-effort across SDK versions
+      try {
+        if (sdk?.wallet?.getEthereumProvider) {
+          const p = await sdk.wallet.getEthereumProvider();
+          if (p) return p;
+        }
+      } catch {}
+      try { if (sdk?.wallet?.ethereum) return sdk.wallet.ethereum; } catch {}
+      try { if (sdk?.ethereum) return sdk.ethereum; } catch {}
+      return window.ethereum || null;
     }
 
     async function connectWallet() {
-      if (!window.ethereum) {
-        setStatus("No wallet detected", "err");
-        alert("No wallet detected. Please install MetaMask or use a Web3 wallet browser.");
+      setStatus("Connecting...", "warn");
+
+      const walletProvider = await getWalletProvider();
+      if (!walletProvider) {
+        setStatus("No wallet provider found", "err");
+        alert("No wallet provider found. Open inside Warpcast Mini App or install MetaMask.");
         return;
       }
 
-      setStatus("Connecting...", "warn");
+      provider = new ethers.providers.Web3Provider(walletProvider, "any");
 
-      await ensureChain();
+      let accounts = [];
+      try {
+        accounts = await provider.send("eth_requestAccounts", []);
+      } catch (e) {
+        setStatus("Wallet connection rejected", "err");
+        alert(e?.message || "Wallet connection rejected");
+        return;
+      }
 
-      provider = new ethers.providers.Web3Provider(window.ethereum, "any");
-
-      const accounts = await provider.send("eth_requestAccounts", []);
-      userAddress = accounts?.[0];
-
+      address = accounts?.[0] || "";
       signer = provider.getSigner();
 
-      $("addr").textContent = userAddress ? shortAddr(userAddress) : "Not connected";
+      $("addr").textContent = address ? shortAddr(address) : "Not connected";
 
-      const net = await provider.getNetwork();
-      $("net").textContent = `${net.name} (chainId ${net.chainId})`;
+      // Try switch to Base
+      try {
+        await provider.send("wallet_switchEthereumChain", [{ chainId: BASE_CHAIN_HEX }]);
+      } catch {}
 
-      setStatus("Connected", "ok");
+      try {
+        const net = await provider.getNetwork();
+        $("net").textContent = `${net.name} (chainId ${net.chainId})`;
+      } catch {
+        $("net").textContent = "-";
+      }
+
+      setStatus("Connected ✅", "ok");
       updateButtons();
 
-      // If opened as Mini App, tell host we're ready (hide splash)
-      try { await sdk.actions.ready(); } catch (e) {}
+      // Ensure splash is dismissed
+      try { await sdk.actions.ready(); } catch {}
     }
 
     async function dailyCheckin() {
-      if (!signer || !userAddress) return;
+      if (!signer || !address) return;
 
       if (hasCheckedInToday()) {
-        setStatus("Already checked in today", "ok");
+        setStatus("Already checked in today ✅", "ok");
         updateButtons();
         return;
       }
@@ -220,15 +267,15 @@
       const ok = confirm("This will send a 0 ETH transaction and still costs gas. Continue?");
       if (!ok) return;
 
+      setStatus("Sending transaction...", "warn");
+
+      const data = ethers.utils.hexlify(
+        ethers.utils.toUtf8Bytes("DAILY_CHECKIN:" + todayKeyUTC())
+      );
+
       try {
-        setStatus("Sending transaction...", "warn");
-
-        const data = ethers.utils.hexlify(
-          ethers.utils.toUtf8Bytes("DAILY_CHECKIN:" + todayKey())
-        );
-
         const tx = await signer.sendTransaction({
-          to: userAddress,
+          to: address,
           value: ethers.constants.Zero,
           data
         });
@@ -236,47 +283,35 @@
         setStatus("Waiting for confirmation...", "warn");
         await tx.wait(1);
 
-        localStorage.setItem(LS_KEY, todayKey());
-
-        setStatus("Daily check-in successful ✅", "ok");
+        localStorage.setItem(LS_KEY, todayKeyUTC());
         updateButtons();
 
+        setStatus("Daily check-in successful ✅", "ok");
         alert("Check-in successful!\nTx hash:\n" + tx.hash);
       } catch (e) {
         console.error(e);
-        setStatus("Transaction failed", "err");
+        setStatus("Transaction failed ❌", "err");
         alert(e?.message || "Transaction rejected");
       }
     }
 
-    async function addMiniApp() {
+    async function getQuickAuthToken() {
       try {
-        await sdk.actions.addMiniApp();
-        alert("Add Mini App request sent ✅");
+        const token = await sdk.quickAuth.getToken();
+        console.log("QuickAuth token:", token);
+        alert("QuickAuth token printed to console.");
       } catch (e) {
-        alert("Add Mini App failed:\n" + (e?.message || e));
+        alert("Quick Auth failed: " + (e?.message || e));
       }
     }
 
-    // Wire up UI
     $("connectBtn").onclick = connectWallet;
     $("checkinBtn").onclick = dailyCheckin;
-    $("addMiniAppBtn").onclick = addMiniApp;
+    $("authBtn").onclick = getQuickAuthToken;
 
     updateButtons();
+    await loadFarcasterProfile();
 
-    // If opened in Mini App, hide splash once UI is ready even before wallet connect
-    try {
-      const inMini = await sdk.isInMiniApp();
-      if (inMini) {
-        setStatus("Running inside Mini App ✅", "ok");
-        await sdk.actions.ready();
-      }
-    } catch (e) {
-      // ignore
-    }
-
-    // Wallet change listeners
     if (window.ethereum?.on) {
       window.ethereum.on("accountsChanged", () => location.reload());
       window.ethereum.on("chainChanged", () => location.reload());
