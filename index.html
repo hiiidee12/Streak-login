@@ -3,12 +3,32 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Daily Check-in via Wallet Transaction</title>
+  <title>Daily Check-in</title>
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Daily Check-in" />
+  <meta property="og:description" content="Daily check-in using a wallet transaction on Base." />
+  <meta property="og:image" content="https://streak-login.vercel.app/assets/check.jpg" />
+  <meta property="og:url" content="https://streak-login.vercel.app/" />
+  <meta property="og:type" content="website" />
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Daily Check-in" />
+  <meta name="twitter:description" content="Daily check-in using a wallet transaction on Base." />
+  <meta name="twitter:image" content="https://streak-login.vercel.app/assets/check.jpg" />
+
+  <!-- Farcaster Mini App (IMPORTANT) -->
+  <!-- NOTE: imageUrl should be 3:2 (e.g. 1200x800). Please upload /miniapp-card.png -->
+  <meta
+    name="fc:miniapp"
+    content='{"version":"1","imageUrl":"https://streak-login.vercel.app/miniapp-card.png","button":{"title":"Open Daily Check-in","action":{"type":"launch_frame","name":"Daily Check-in","url":"https://streak-login.vercel.app/","splashImageUrl":"https://streak-login.vercel.app/assets/check.jpg","splashBackgroundColor":"#0b0f17"}}}'
+  />
 
   <style>
     :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
     body { margin:0; background:#0b0f17; color:#e7eefc; }
-    .container { max-width: 460px; margin: 0 auto; padding: 16px; }
+    .container { max-width: 480px; margin: 0 auto; padding: 16px; }
     .card {
       background:#121a2a;
       border:1px solid #22304d;
@@ -17,10 +37,11 @@
       margin:12px 0;
     }
     h1 { font-size:18px; margin:0 0 8px; }
-    .muted { opacity:.85; font-size:13px; line-height:1.4; }
-    .row { display:flex; gap:10px; margin-top:10px; }
+    .muted { opacity:.86; font-size:13px; line-height:1.45; }
+    .row { display:flex; gap:10px; margin-top:10px; flex-wrap: wrap; }
     button {
-      flex:1;
+      flex: 1;
+      min-width: 160px;
       padding:12px;
       border-radius:14px;
       border:1px solid #2a3a5d;
@@ -29,42 +50,41 @@
       font-weight:800;
       cursor:pointer;
     }
-    button:disabled { opacity:.5; cursor:not-allowed; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
     .badge {
       display:inline-block;
       padding:6px 10px;
       border:1px solid #2a3a5d;
       border-radius:999px;
       font-size:12px;
+      word-break: break-word;
     }
     .ok { color:#7CFFB2; }
     .warn { color:#FFD37C; }
     .err { color:#FF8A8A; }
     .hr { height:1px; background:#22304d; margin:12px 0; }
     code { font-size:12px; }
+    .mini { font-size:12px; opacity:.8; margin-top:8px; }
   </style>
 
-  <!-- ethers.js -->
+  <!-- ethers.js (UMD) -->
   <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
 </head>
 
 <body>
   <div class="container">
-
     <div class="card">
       <h1>Daily Check-in (Wallet Transaction)</h1>
       <div class="muted">
-        Demo app: daily check-in triggers a <b>0 ETH transaction</b> to your own wallet.
+        This demo performs a <b>0 ETH</b> transaction to your own address as a “check-in”.
         <span class="warn"><b>Gas fees apply.</b></span><br />
-        Check-in status is stored in <code>localStorage</code> (demo only, not secure).
+        Check-in status is stored in <code>localStorage</code> (demo only; not secure without on-chain verification).
       </div>
 
       <div class="hr"></div>
 
-      <div>
-        <div class="muted">Wallet Address</div>
-        <div id="addr" class="badge">Not connected</div>
-      </div>
+      <div class="muted">Wallet Address</div>
+      <div id="addr" class="badge">Not connected</div>
 
       <div style="margin-top:10px;">
         <div class="muted">Network</div>
@@ -74,27 +94,31 @@
       <div class="row">
         <button id="connectBtn">Connect Wallet</button>
         <button id="checkinBtn" disabled>Daily Check-in (Tx)</button>
+        <button id="addMiniAppBtn" disabled>Add Mini App</button>
       </div>
 
-      <div style="margin-top:10px" class="muted">
+      <div class="mini">
         Status: <span id="status" class="badge">Idle</span>
       </div>
     </div>
 
     <div class="card">
-      <div class="muted"><b>Important Notes</b></div>
+      <div class="muted"><b>Notes</b></div>
       <ul class="muted">
-        <li>This is <b>not secure</b> without a smart contract or backend verification.</li>
-        <li>Production version should use a smart contract (e.g. <code>checkIn()</code>).</li>
+        <li>If opened inside a Mini App webview, <code>window.ethereum</code> may not exist.</li>
+        <li>Production version should use a smart contract (e.g. <code>checkIn()</code>) or verify the tx on a backend.</li>
       </ul>
     </div>
-
   </div>
 
-  <script>
-    // ===== CONFIG =====
+  <script type="module">
+    import { sdk } from "https://esm.sh/@farcaster/miniapp-sdk";
+
+    const ethers = window.ethers;
+
+    // ===== Config: Base Mainnet =====
     const TARGET_CHAIN = {
-      chainIdHex: "0x2105", // Base Mainnet (8453)
+      chainIdHex: "0x2105", // 8453
       chainName: "Base Mainnet",
       nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
       rpcUrls: ["https://mainnet.base.org"],
@@ -104,48 +128,60 @@
     const LS_KEY = "daily_checkin_last_date";
 
     let provider, signer, userAddress;
+
     const $ = (id) => document.getElementById(id);
 
-    function setStatus(text, cls) {
+    function setStatus(text, cls = "") {
       $("status").textContent = text;
-      $("status").className = "badge " + (cls || "");
+      $("status").className = "badge " + cls;
     }
 
     function todayKey() {
-      return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      // YYYY-MM-DD (UTC)
+      return new Date().toISOString().slice(0, 10);
     }
 
     function hasCheckedInToday() {
       return localStorage.getItem(LS_KEY) === todayKey();
     }
 
-    function updateCheckinButton() {
+    function shortAddr(a) {
+      return a ? `${a.slice(0, 6)}...${a.slice(-4)}` : "";
+    }
+
+    function updateButtons() {
       const checked = hasCheckedInToday();
       $("checkinBtn").disabled = !userAddress || checked;
-      $("checkinBtn").textContent = checked
-        ? "Already checked in today ✅"
-        : "Daily Check-in (Tx)";
+      $("checkinBtn").textContent = checked ? "Already checked in today ✅" : "Daily Check-in (Tx)";
+      $("addMiniAppBtn").disabled = false; // enable once JS loaded (manifest still required)
     }
 
     async function ensureChain() {
+      if (!window.ethereum) return;
+
       try {
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
           params: [{ chainId: TARGET_CHAIN.chainIdHex }]
         });
       } catch (err) {
-        if (err.code === 4902) {
+        // If chain is not added
+        if (err && err.code === 4902) {
           await window.ethereum.request({
             method: "wallet_addEthereumChain",
             params: [TARGET_CHAIN]
           });
+        } else {
+          // user rejected or other errors -> allow continuing on current network
+          console.warn("Chain switch skipped:", err);
         }
       }
     }
 
     async function connectWallet() {
       if (!window.ethereum) {
-        alert("No wallet detected. Please install MetaMask or a Web3 wallet.");
+        setStatus("No wallet detected", "err");
+        alert("No wallet detected. Please install MetaMask or use a Web3 wallet browser.");
         return;
       }
 
@@ -154,26 +190,34 @@
       await ensureChain();
 
       provider = new ethers.providers.Web3Provider(window.ethereum, "any");
+
       const accounts = await provider.send("eth_requestAccounts", []);
-      userAddress = accounts[0];
+      userAddress = accounts?.[0];
+
       signer = provider.getSigner();
 
-      $("addr").textContent =
-        userAddress.slice(0, 6) + "..." + userAddress.slice(-4);
+      $("addr").textContent = userAddress ? shortAddr(userAddress) : "Not connected";
 
       const net = await provider.getNetwork();
       $("net").textContent = `${net.name} (chainId ${net.chainId})`;
 
       setStatus("Connected", "ok");
-      updateCheckinButton();
+      updateButtons();
+
+      // If opened as Mini App, tell host we're ready (hide splash)
+      try { await sdk.actions.ready(); } catch (e) {}
     }
 
     async function dailyCheckin() {
-      if (hasCheckedInToday()) return;
+      if (!signer || !userAddress) return;
 
-      const ok = confirm(
-        "This will send a 0 ETH transaction and still costs gas. Continue?"
-      );
+      if (hasCheckedInToday()) {
+        setStatus("Already checked in today", "ok");
+        updateButtons();
+        return;
+      }
+
+      const ok = confirm("This will send a 0 ETH transaction and still costs gas. Continue?");
       if (!ok) return;
 
       try {
@@ -195,22 +239,45 @@
         localStorage.setItem(LS_KEY, todayKey());
 
         setStatus("Daily check-in successful ✅", "ok");
-        updateCheckinButton();
+        updateButtons();
 
         alert("Check-in successful!\nTx hash:\n" + tx.hash);
       } catch (e) {
         console.error(e);
         setStatus("Transaction failed", "err");
-        alert(e.message || "Transaction rejected");
+        alert(e?.message || "Transaction rejected");
       }
     }
 
+    async function addMiniApp() {
+      try {
+        await sdk.actions.addMiniApp();
+        alert("Add Mini App request sent ✅");
+      } catch (e) {
+        alert("Add Mini App failed:\n" + (e?.message || e));
+      }
+    }
+
+    // Wire up UI
     $("connectBtn").onclick = connectWallet;
     $("checkinBtn").onclick = dailyCheckin;
+    $("addMiniAppBtn").onclick = addMiniApp;
 
-    updateCheckinButton();
+    updateButtons();
 
-    if (window.ethereum) {
+    // If opened in Mini App, hide splash once UI is ready even before wallet connect
+    try {
+      const inMini = await sdk.isInMiniApp();
+      if (inMini) {
+        setStatus("Running inside Mini App ✅", "ok");
+        await sdk.actions.ready();
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // Wallet change listeners
+    if (window.ethereum?.on) {
       window.ethereum.on("accountsChanged", () => location.reload());
       window.ethereum.on("chainChanged", () => location.reload());
     }
