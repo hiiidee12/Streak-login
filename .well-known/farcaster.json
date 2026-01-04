@@ -1,1 +1,15 @@
-
+{
+  "accountAssociation": {
+    "header": "",
+    "payload": "",
+    "signature": ""
+  },
+  "miniapp": {
+    "version": "1",
+    "name": "Daily Check-in",
+    "homeUrl": "https://streak-login.vercel.app/",
+    "iconUrl": "https://streak-login.vercel.app/assets/check.jpg",
+    "splashImageUrl": "https://streak-login.vercel.app/assets/check.jpg",
+    "splashBackgroundColor": "#0b0f17"
+  }
+}
