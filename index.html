@@ -77,6 +77,7 @@
   <div class="container">
 
     <div class="card">
+      <!-- We will hide this automatically inside Mini App -->
       <div class="muted" id="env">Loading...</div>
 
       <div class="profile">
@@ -132,7 +133,7 @@
     import { sdk } from "https://esm.sh/@farcaster/miniapp-sdk";
     const ethers = window.ethers;
 
-    const BASE_CHAIN_HEX = "0x2105"; // 8453
+    const BASE_CHAIN_HEX = "0x2105"; // Base Mainnet (8453)
     const LS_KEY = "daily_checkin_last_date";
 
     let provider, signer, address;
@@ -162,6 +163,19 @@
       $("checkinBtn").textContent = checked ? "Already checked in today ✅" : "Daily Check-in (Tx)";
     }
 
+    function setConnectButtonConnected(isConnected) {
+      const btn = $("connectBtn");
+      if (!btn) return;
+
+      if (isConnected) {
+        btn.textContent = "Connected ✅";
+        btn.disabled = true;
+      } else {
+        btn.textContent = "Connect Wallet";
+        btn.disabled = false;
+      }
+    }
+
     async function safeGetContext() {
       // Prefer sdk.getContext() if available; fallback to sdk.context
       try {
@@ -176,7 +190,14 @@
     async function loadFarcasterProfile() {
       try {
         const inMini = await sdk.isInMiniApp();
-        $("env").textContent = inMini ? "Running inside Mini App ✅" : "Running in normal browser 🌐";
+
+        // Hide env banner inside Mini App (removes "Running inside Mini App ✅")
+        if (inMini) {
+          $("env").style.display = "none";
+        } else {
+          $("env").style.display = "block";
+          $("env").textContent = "Running in normal browser 🌐";
+        }
 
         if (inMini) {
           const ctx = await safeGetContext();
@@ -193,7 +214,7 @@
           try { await sdk.actions.ready(); } catch {}
         }
       } catch (e) {
-        $("env").textContent = "Mini App SDK not available";
+        $("env").style.display = "none";
       }
     }
 
@@ -212,6 +233,7 @@
 
     async function connectWallet() {
       setStatus("Connecting...", "warn");
+      setConnectButtonConnected(false);
 
       const walletProvider = await getWalletProvider();
       if (!walletProvider) {
@@ -227,31 +249,41 @@
         accounts = await provider.send("eth_requestAccounts", []);
       } catch (e) {
         setStatus("Wallet connection rejected", "err");
+        setConnectButtonConnected(false);
         alert(e?.message || "Wallet connection rejected");
         return;
       }
 
       address = accounts?.[0] || "";
+      if (!address) {
+        setStatus("No account returned", "err");
+        setConnectButtonConnected(false);
+        return;
+      }
+
       signer = provider.getSigner();
 
-      $("addr").textContent = address ? shortAddr(address) : "Not connected";
+      $("addr").textContent = shortAddr(address);
 
-      // Try switch to Base
+      // Try switch to Base (not all providers support this method)
       try {
         await provider.send("wallet_switchEthereumChain", [{ chainId: BASE_CHAIN_HEX }]);
       } catch {}
 
+      // Show network (fallback text if provider doesn't report a name)
       try {
         const net = await provider.getNetwork();
-        $("net").textContent = `${net.name} (chainId ${net.chainId})`;
+        const name = (net?.name && net.name !== "unknown") ? net.name : "unknown";
+        $("net").textContent = `${name} (chainId ${net.chainId})`;
       } catch {
         $("net").textContent = "-";
       }
 
       setStatus("Connected ✅", "ok");
+      setConnectButtonConnected(true);
       updateButtons();
 
-      // Ensure splash is dismissed
+      // Ensure splash dismissed (Mini App)
       try { await sdk.actions.ready(); } catch {}
     }
 
@@ -305,13 +337,17 @@
       }
     }
 
+    // Wire up
     $("connectBtn").onclick = connectWallet;
     $("checkinBtn").onclick = dailyCheckin;
     $("authBtn").onclick = getQuickAuthToken;
 
+    // Init
+    setConnectButtonConnected(false);
     updateButtons();
     await loadFarcasterProfile();
 
+    // Optional: if user opens outside Mini App with MetaMask, listen for changes
     if (window.ethereum?.on) {
       window.ethereum.on("accountsChanged", () => location.reload());
       window.ethereum.on("chainChanged", () => location.reload());
