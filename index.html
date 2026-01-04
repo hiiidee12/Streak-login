@@ -24,40 +24,20 @@
     content='{"version":"1","imageUrl":"https://streak-login.vercel.app/miniapp-card.png","aspectRatio":"3:2","button":{"title":"Open Daily Check-in","action":{"type":"launch_frame","name":"Daily Check-in","url":"https://streak-login.vercel.app/","splashImageUrl":"https://streak-login.vercel.app/assets/check.jpg","splashBackgroundColor":"#0b0f17"}}}'
   />
 
-  <style>
-    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    body { margin:0; background:#0b0f17; color:#e7eefc; }
-    .container { max-width: 520px; margin: 0 auto; padding: 16px; }
-    .card { background:#121a2a; border:1px solid #22304d; border-radius:16px; padding:14px; margin:12px 0; }
-    h1 { font-size:18px; margin:0 0 8px; }
-    .muted { opacity:.86; font-size:13px; line-height:1.45; }
-    .row { display:flex; gap:10px; margin-top:10px; flex-wrap: wrap; }
-    button {
-      flex: 1; min-width: 170px; padding:12px; border-radius:14px;
-      border:1px solid #2a3a5d; background:#1a2a4a; color:#e7eefc; font-weight:800; cursor:pointer;
-    }
-    button:disabled { opacity:.55; cursor:not-allowed; }
-    .badge { display:inline-block; padding:6px 10px; border:1px solid #2a3a5d; border-radius:999px; font-size:12px; word-break: break-word; }
-    .ok { color:#7CFFB2; }
-    .warn { color:#FFD37C; }
-    .err { color:#FF8A8A; }
-    .hr { height:1px; background:#22304d; margin:12px 0; }
-    .mini { font-size:12px; opacity:.8; margin-top:8px; }
-    .profile { display:flex; gap:10px; align-items:center; margin-top:10px; }
-    .pfp { width:44px; height:44px; border-radius:999px; border:1px solid #22304d; object-fit:cover; }
-    code { font-size:12px; }
-  </style>
+  <link rel="stylesheet" href="/css/style.css" />
 </head>
 
 <body>
   <div class="container">
+
     <div class="card">
+      <!-- hidden automatically in Mini App -->
       <div class="muted" id="env">Loading...</div>
 
       <div class="profile">
         <img id="pfp" class="pfp" src="https://streak-login.vercel.app/assets/check.jpg" alt="pfp" />
         <div>
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <div class="profileTop">
             <b id="fcName">-</b>
             <span class="badge" id="fcFid">FID: -</span>
           </div>
@@ -79,7 +59,7 @@
       <div class="muted">Wallet Address</div>
       <div id="addr" class="badge">Not connected</div>
 
-      <div style="margin-top:10px;">
+      <div class="mt10">
         <div class="muted">Network</div>
         <div id="net" class="badge">-</div>
       </div>
@@ -100,260 +80,37 @@
         <li>We confirm it via Base RPC to avoid unsupported wallet methods.</li>
       </ul>
     </div>
+
   </div>
 
-  <script type="module">
-    import { sdk } from "https://esm.sh/@farcaster/miniapp-sdk";
+  <!-- Toast -->
+  <div id="toast" class="toast" aria-live="polite" aria-atomic="true"></div>
 
-    // ===== Config =====
-    const BASE_CHAIN_ID_DEC = 8453;
-    const BASE_CHAIN_ID_HEX = "0x2105";
-    const BASE_RPC = "https://mainnet.base.org";
-    const LS_KEY = "daily_checkin_last_date";
+  <!-- Modal -->
+  <div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="modalTitle">Success</div>
+          <div class="modal-sub" id="modalSub">Transaction sent</div>
+        </div>
+        <button class="modal-close" id="modalClose" aria-label="Close">✕</button>
+      </div>
 
-    let ethProvider = null;
-    let address = "";
+      <div class="modal-body">
+        <div class="muted" style="margin-bottom:8px;">Tx Hash</div>
+        <div class="txbox">
+          <code id="modalTxHash" class="txhash"></code>
+        </div>
 
-    const $ = (id) => document.getElementById(id);
+        <div class="row" style="margin-top:12px;">
+          <button id="copyTxBtn">Copy Hash</button>
+          <button id="openExplorerBtn">Open Explorer</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
-    function setStatus(text, cls = "") {
-      $("status").textContent = text;
-      $("status").className = "badge " + cls;
-    }
-
-    function todayKeyUTC() {
-      return new Date().toISOString().slice(0, 10);
-    }
-
-    function hasCheckedInToday() {
-      return localStorage.getItem(LS_KEY) === todayKeyUTC();
-    }
-
-    function shortAddr(a) {
-      return a ? `${a.slice(0, 6)}...${a.slice(-4)}` : "";
-    }
-
-    function updateButtons() {
-      const checked = hasCheckedInToday();
-      $("checkinBtn").disabled = !address || checked;
-      $("checkinBtn").textContent = checked ? "Already checked in today ✅" : "Daily Check-in (Tx)";
-    }
-
-    function setConnectButtonConnected(isConnected) {
-      const btn = $("connectBtn");
-      if (!btn) return;
-      if (isConnected) {
-        btn.textContent = "Connected ✅";
-        btn.disabled = true;
-      } else {
-        btn.textContent = "Connect Wallet";
-        btn.disabled = false;
-      }
-    }
-
-    async function safeGetContext() {
-      try { if (typeof sdk.getContext === "function") return await sdk.getContext(); } catch {}
-      try { return sdk.context; } catch {}
-      return null;
-    }
-
-    async function loadFarcasterProfile() {
-      try {
-        const inMini = await sdk.isInMiniApp();
-
-        // hide env text inside Mini App
-        if (inMini) {
-          $("env").style.display = "none";
-        } else {
-          $("env").style.display = "block";
-          $("env").textContent = "Running in normal browser 🌐";
-        }
-
-        if (inMini) {
-          const ctx = await safeGetContext();
-          const user = ctx?.user;
-          if (user) {
-            $("fcName").textContent = user.displayName || user.username || "Farcaster User";
-            $("fcUser").textContent = "@" + (user.username || "unknown");
-            $("fcFid").textContent = "FID: " + (user.fid ?? "-");
-            if (user.pfpUrl) $("pfp").src = user.pfpUrl;
-          }
-          try { await sdk.actions.ready(); } catch {}
-        }
-      } catch {
-        $("env").style.display = "none";
-      }
-    }
-
-    async function getWalletProvider() {
-      try {
-        if (sdk?.wallet?.getEthereumProvider) {
-          const p = await sdk.wallet.getEthereumProvider();
-          if (p) return p;
-        }
-      } catch {}
-      return window.ethereum || null;
-    }
-
-    async function rpc(method, params = []) {
-      const res = await fetch(BASE_RPC, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
-      });
-      const json = await res.json();
-      if (json.error) throw new Error(json.error.message || "RPC error");
-      return json.result;
-    }
-
-    async function waitForReceipt(txHash, timeoutMs = 120000) {
-      const started = Date.now();
-      while (Date.now() - started < timeoutMs) {
-        const receipt = await rpc("eth_getTransactionReceipt", [txHash]);
-        if (receipt) return receipt;
-        await new Promise(r => setTimeout(r, 2000));
-      }
-      throw new Error("Timeout waiting for confirmation.");
-    }
-
-    async function connectWallet() {
-      setStatus("Connecting...", "warn");
-      setConnectButtonConnected(false);
-
-      ethProvider = await getWalletProvider();
-      if (!ethProvider?.request) {
-        setStatus("No wallet provider found", "err");
-        alert("No wallet provider found. Open inside Warpcast Mini App or install MetaMask.");
-        return;
-      }
-
-      // request account
-      let accounts = [];
-      try {
-        accounts = await ethProvider.request({ method: "eth_requestAccounts", params: [] });
-      } catch (e) {
-        setStatus("Wallet connection rejected", "err");
-        alert(e?.message || "Wallet connection rejected");
-        return;
-      }
-
-      address = accounts?.[0] || "";
-      if (!address) {
-        setStatus("No account returned", "err");
-        return;
-      }
-
-      $("addr").textContent = shortAddr(address);
-
-      // read chainId (don't force switch; many providers don't support it)
-      let chainIdHex = "";
-      try {
-        chainIdHex = await ethProvider.request({ method: "eth_chainId", params: [] });
-      } catch {}
-
-      // show network
-      if (chainIdHex) {
-        const chainIdDec = parseInt(chainIdHex, 16);
-        $("net").textContent = `chainId ${chainIdDec}` + (chainIdDec === BASE_CHAIN_ID_DEC ? " (Base ✅)" : "");
-      } else {
-        $("net").textContent = "-";
-      }
-
-      // If not Base, we still can try to send; but warn user
-      if (chainIdHex && parseInt(chainIdHex, 16) !== BASE_CHAIN_ID_DEC) {
-        setStatus("Connected (not Base) ⚠️", "warn");
-      } else {
-        setStatus("Connected ✅", "ok");
-      }
-
-      setConnectButtonConnected(true);
-      updateButtons();
-      try { await sdk.actions.ready(); } catch {}
-    }
-
-    function utf8ToHex(str) {
-      const enc = new TextEncoder().encode(str);
-      return "0x" + Array.from(enc).map(b => b.toString(16).padStart(2, "0")).join("");
-    }
-
-    async function dailyCheckin() {
-      if (!ethProvider?.request || !address) return;
-
-      if (hasCheckedInToday()) {
-        setStatus("Already checked in today ✅", "ok");
-        updateButtons();
-        return;
-      }
-
-      // confirm dialog (your screenshot)
-      const ok = confirm("This will send a 0 ETH transaction and still costs gas. Continue?");
-      if (!ok) return;
-
-      setStatus("Preparing transaction...", "warn");
-
-      // check chain
-      let chainIdHex = "";
-      try { chainIdHex = await ethProvider.request({ method: "eth_chainId", params: [] }); } catch {}
-      const chainIdDec = chainIdHex ? parseInt(chainIdHex, 16) : 0;
-
-      if (chainIdDec && chainIdDec !== BASE_CHAIN_ID_DEC) {
-        alert("You are not on Base network. Please switch to Base in your wallet, then try again.");
-        setStatus("Wrong network (need Base)", "err");
-        return;
-      }
-
-      const data = utf8ToHex("DAILY_CHECKIN:" + todayKeyUTC());
-
-      // Send tx (0 ETH to self)
-      let txHash = "";
-      try {
-        setStatus("Sending transaction...", "warn");
-        txHash = await ethProvider.request({
-          method: "eth_sendTransaction",
-          params: [{
-            from: address,
-            to: address,
-            value: "0x0",
-            data
-          }]
-        });
-      } catch (e) {
-        setStatus("Transaction rejected/failed ❌", "err");
-        alert(e?.message || "Transaction rejected");
-        return;
-      }
-
-      // Confirm via Base RPC (avoid unsupported provider methods)
-      try {
-        setStatus("Waiting confirmation...", "warn");
-        await waitForReceipt(txHash);
-        localStorage.setItem(LS_KEY, todayKeyUTC());
-        updateButtons();
-        setStatus("Daily check-in successful ✅", "ok");
-        alert("Check-in successful!\nTx hash:\n" + txHash);
-      } catch (e) {
-        setStatus("Sent, but not confirmed yet ⚠️", "warn");
-        alert("Tx sent:\n" + txHash + "\n\nBut confirmation check timed out. You can check it later on Base explorer.");
-      }
-    }
-
-    async function getQuickAuthToken() {
-      try {
-        const token = await sdk.quickAuth.getToken();
-        console.log("QuickAuth token:", token);
-        alert("QuickAuth token printed to console.");
-      } catch (e) {
-        alert("Quick Auth failed: " + (e?.message || e));
-      }
-    }
-
-    $("connectBtn").onclick = connectWallet;
-    $("checkinBtn").onclick = dailyCheckin;
-    $("authBtn").onclick = getQuickAuthToken;
-
-    setConnectButtonConnected(false);
-    updateButtons();
-    await loadFarcasterProfile();
-  </script>
+  <script type="module" src="/js/app.js"></script>
 </body>
 </html>
