@@ -45,6 +45,7 @@
     .mini { font-size:12px; opacity:.8; margin-top:8px; }
     .profile { display:flex; gap:10px; align-items:center; margin-top:10px; }
     .pfp { width:44px; height:44px; border-radius:999px; border:1px solid #22304d; object-fit:cover; }
+    code { font-size:12px; }
   </style>
 </head>
 
@@ -66,11 +67,11 @@
 
       <div class="hr"></div>
 
-      <h1>Daily Check-in (On-chain)</h1>
+      <h1>Daily Check-in (Wallet Transaction)</h1>
       <div class="muted">
-        Check-in via smart contract on <b>Base</b>.
-        Reward is sent from contract balance.
-        <span class="warn"><b>Gas fees apply.</b></span>
+        This demo performs a <b>0 ETH</b> transaction to your own address as a “check-in”.
+        <span class="warn"><b>Gas fees apply.</b></span><br />
+        Check-in status is stored in <code>localStorage</code> (demo only; not secure without on-chain verification).
       </div>
 
       <div class="hr"></div>
@@ -85,106 +86,254 @@
 
       <div class="row">
         <button id="connectBtn">Connect Wallet</button>
-        <button id="checkinBtn" disabled>Daily Check-in</button>
+        <button id="checkinBtn" disabled>Daily Check-in (Tx)</button>
         <button id="authBtn">Get QuickAuth Token</button>
       </div>
 
       <div class="mini">Status: <span id="status" class="badge">Idle</span></div>
     </div>
+
+    <div class="card">
+      <div class="muted"><b>Notes</b></div>
+      <ul class="muted">
+        <li>We send a transaction using <code>eth_sendTransaction</code> (EIP-1193).</li>
+        <li>We confirm it via Base RPC to avoid unsupported wallet methods.</li>
+      </ul>
+    </div>
   </div>
 
   <script type="module">
     import { sdk } from "https://esm.sh/@farcaster/miniapp-sdk";
-    import { ethers } from "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
 
-    const BASE_CHAIN_ID = 8453;
+    // ===== Config =====
+    const BASE_CHAIN_ID_DEC = 8453;
+    const BASE_CHAIN_ID_HEX = "0x2105";
+    const BASE_RPC = "https://mainnet.base.org";
     const LS_KEY = "daily_checkin_last_date";
-
-    // 🔗 SMART CONTRACT
-    const CHECKIN_CONTRACT = "0x2a15A134f8D88e79e8053371c32Dd77B53e79e6d";
-    const CHECKIN_ABI = [
-      "function checkIn() external",
-      "function canCheckIn(address) view returns (bool)"
-    ];
 
     let ethProvider = null;
     let address = "";
 
     const $ = (id) => document.getElementById(id);
 
-    function setStatus(text, cls="") {
+    function setStatus(text, cls = "") {
       $("status").textContent = text;
       $("status").className = "badge " + cls;
     }
 
+    function todayKeyUTC() {
+      return new Date().toISOString().slice(0, 10);
+    }
+
+    function hasCheckedInToday() {
+      return localStorage.getItem(LS_KEY) === todayKeyUTC();
+    }
+
     function shortAddr(a) {
-      return a ? a.slice(0,6) + "..." + a.slice(-4) : "";
+      return a ? `${a.slice(0, 6)}...${a.slice(-4)}` : "";
     }
 
     function updateButtons() {
-      $("checkinBtn").disabled = !address;
+      const checked = hasCheckedInToday();
+      $("checkinBtn").disabled = !address || checked;
+      $("checkinBtn").textContent = checked ? "Already checked in today ✅" : "Daily Check-in (Tx)";
+    }
+
+    function setConnectButtonConnected(isConnected) {
+      const btn = $("connectBtn");
+      if (!btn) return;
+      if (isConnected) {
+        btn.textContent = "Connected ✅";
+        btn.disabled = true;
+      } else {
+        btn.textContent = "Connect Wallet";
+        btn.disabled = false;
+      }
+    }
+
+    async function safeGetContext() {
+      try { if (typeof sdk.getContext === "function") return await sdk.getContext(); } catch {}
+      try { return sdk.context; } catch {}
+      return null;
     }
 
     async function loadFarcasterProfile() {
       try {
         const inMini = await sdk.isInMiniApp();
-        $("env").textContent = inMini ? "Running in Farcaster Mini App" : "Running in browser 🌐";
+
+        // hide env text inside Mini App
         if (inMini) {
-          const ctx = await sdk.getContext();
-          const u = ctx?.user;
-          if (u) {
-            $("fcName").textContent = u.displayName || u.username;
-            $("fcUser").textContent = "@" + (u.username || "");
-            $("fcFid").textContent = "FID: " + u.fid;
-            if (u.pfpUrl) $("pfp").src = u.pfpUrl;
+          $("env").style.display = "none";
+        } else {
+          $("env").style.display = "block";
+          $("env").textContent = "Running in normal browser 🌐";
+        }
+
+        if (inMini) {
+          const ctx = await safeGetContext();
+          const user = ctx?.user;
+          if (user) {
+            $("fcName").textContent = user.displayName || user.username || "Farcaster User";
+            $("fcUser").textContent = "@" + (user.username || "unknown");
+            $("fcFid").textContent = "FID: " + (user.fid ?? "-");
+            if (user.pfpUrl) $("pfp").src = user.pfpUrl;
           }
           try { await sdk.actions.ready(); } catch {}
         }
+      } catch {
+        $("env").style.display = "none";
+      }
+    }
+
+    async function getWalletProvider() {
+      try {
+        if (sdk?.wallet?.getEthereumProvider) {
+          const p = await sdk.wallet.getEthereumProvider();
+          if (p) return p;
+        }
       } catch {}
+      return window.ethereum || null;
+    }
+
+    async function rpc(method, params = []) {
+      const res = await fetch(BASE_RPC, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error.message || "RPC error");
+      return json.result;
+    }
+
+    async function waitForReceipt(txHash, timeoutMs = 120000) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        const receipt = await rpc("eth_getTransactionReceipt", [txHash]);
+        if (receipt) return receipt;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      throw new Error("Timeout waiting for confirmation.");
     }
 
     async function connectWallet() {
-      ethProvider = window.ethereum || await sdk.wallet.getEthereumProvider();
-      if (!ethProvider) return alert("No wallet provider found");
+      setStatus("Connecting...", "warn");
+      setConnectButtonConnected(false);
 
-      const accounts = await ethProvider.request({ method: "eth_requestAccounts" });
-      address = accounts[0];
-      $("addr").textContent = shortAddr(address);
-
-      const chainId = parseInt(await ethProvider.request({ method: "eth_chainId" }), 16);
-      $("net").textContent = chainId === BASE_CHAIN_ID ? "Base ✅" : "Wrong network ❌";
-
-      if (chainId !== BASE_CHAIN_ID) {
-        setStatus("Please switch to Base", "err");
+      ethProvider = await getWalletProvider();
+      if (!ethProvider?.request) {
+        setStatus("No wallet provider found", "err");
+        alert("No wallet provider found. Open inside Warpcast Mini App or install MetaMask.");
         return;
       }
 
-      setStatus("Connected", "ok");
+      // request account
+      let accounts = [];
+      try {
+        accounts = await ethProvider.request({ method: "eth_requestAccounts", params: [] });
+      } catch (e) {
+        setStatus("Wallet connection rejected", "err");
+        alert(e?.message || "Wallet connection rejected");
+        return;
+      }
+
+      address = accounts?.[0] || "";
+      if (!address) {
+        setStatus("No account returned", "err");
+        return;
+      }
+
+      $("addr").textContent = shortAddr(address);
+
+      // read chainId (don't force switch; many providers don't support it)
+      let chainIdHex = "";
+      try {
+        chainIdHex = await ethProvider.request({ method: "eth_chainId", params: [] });
+      } catch {}
+
+      // show network
+      if (chainIdHex) {
+        const chainIdDec = parseInt(chainIdHex, 16);
+        $("net").textContent = `chainId ${chainIdDec}` + (chainIdDec === BASE_CHAIN_ID_DEC ? " (Base ✅)" : "");
+      } else {
+        $("net").textContent = "-";
+      }
+
+      // If not Base, we still can try to send; but warn user
+      if (chainIdHex && parseInt(chainIdHex, 16) !== BASE_CHAIN_ID_DEC) {
+        setStatus("Connected (not Base) ⚠️", "warn");
+      } else {
+        setStatus("Connected ✅", "ok");
+      }
+
+      setConnectButtonConnected(true);
       updateButtons();
+      try { await sdk.actions.ready(); } catch {}
+    }
+
+    function utf8ToHex(str) {
+      const enc = new TextEncoder().encode(str);
+      return "0x" + Array.from(enc).map(b => b.toString(16).padStart(2, "0")).join("");
     }
 
     async function dailyCheckin() {
+      if (!ethProvider?.request || !address) return;
+
+      if (hasCheckedInToday()) {
+        setStatus("Already checked in today ✅", "ok");
+        updateButtons();
+        return;
+      }
+
+      // confirm dialog (your screenshot)
+      const ok = confirm("This will send a 0 ETH transaction and still costs gas. Continue?");
+      if (!ok) return;
+
+      setStatus("Preparing transaction...", "warn");
+
+      // check chain
+      let chainIdHex = "";
+      try { chainIdHex = await ethProvider.request({ method: "eth_chainId", params: [] }); } catch {}
+      const chainIdDec = chainIdHex ? parseInt(chainIdHex, 16) : 0;
+
+      if (chainIdDec && chainIdDec !== BASE_CHAIN_ID_DEC) {
+        alert("You are not on Base network. Please switch to Base in your wallet, then try again.");
+        setStatus("Wrong network (need Base)", "err");
+        return;
+      }
+
+      const data = utf8ToHex("DAILY_CHECKIN:" + todayKeyUTC());
+
+      // Send tx (0 ETH to self)
+      let txHash = "";
       try {
-        const provider = new ethers.BrowserProvider(ethProvider);
-        const signer = await provider.getSigner();
-        const contract = new ethers.Contract(CHECKIN_CONTRACT, CHECKIN_ABI, signer);
-
-        const can = await contract.canCheckIn(address);
-        if (!can) {
-          setStatus("Already checked in today ✅", "ok");
-          return;
-        }
-
         setStatus("Sending transaction...", "warn");
-        const tx = await contract.checkIn();
-        await tx.wait();
-
-        localStorage.setItem(LS_KEY, new Date().toISOString().slice(0,10));
-        setStatus("Check-in success 🎉", "ok");
-        alert("Check-in successful!");
+        txHash = await ethProvider.request({
+          method: "eth_sendTransaction",
+          params: [{
+            from: address,
+            to: address,
+            value: "0x0",
+            data
+          }]
+        });
       } catch (e) {
-        setStatus("Check-in failed ❌", "err");
-        alert(e?.reason || e?.message || e);
+        setStatus("Transaction rejected/failed ❌", "err");
+        alert(e?.message || "Transaction rejected");
+        return;
+      }
+
+      // Confirm via Base RPC (avoid unsupported provider methods)
+      try {
+        setStatus("Waiting confirmation...", "warn");
+        await waitForReceipt(txHash);
+        localStorage.setItem(LS_KEY, todayKeyUTC());
+        updateButtons();
+        setStatus("Daily check-in successful ✅", "ok");
+        alert("Check-in successful!\nTx hash:\n" + txHash);
+      } catch (e) {
+        setStatus("Sent, but not confirmed yet ⚠️", "warn");
+        alert("Tx sent:\n" + txHash + "\n\nBut confirmation check timed out. You can check it later on Base explorer.");
       }
     }
 
@@ -202,6 +351,7 @@
     $("checkinBtn").onclick = dailyCheckin;
     $("authBtn").onclick = getQuickAuthToken;
 
+    setConnectButtonConnected(false);
     updateButtons();
     await loadFarcasterProfile();
   </script>
